@@ -103,6 +103,23 @@ describe("checkLinkHealth", () => {
     );
   });
 
+  it.each([403, 501])("falls back to GET when HEAD returns HTTP %s", async (status) => {
+    fetchMock.mockResolvedValueOnce(response(status));
+    fetchMock.mockResolvedValueOnce(response(200));
+
+    const record = await checkLinkHealth("link-1", "https://example.com", {
+      now: () => new Date(checkedAt),
+      timeoutMs: 1000
+    });
+
+    expect(record.status).toBe("normal");
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "https://example.com",
+      expect.objectContaining({ method: "GET", credentials: "omit" })
+    );
+  });
+
   it("returns degraded for a 500 HTTP response", async () => {
     fetchMock.mockResolvedValueOnce(response(500));
 

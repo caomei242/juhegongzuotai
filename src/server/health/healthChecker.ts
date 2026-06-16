@@ -32,7 +32,7 @@ export async function checkLinkHealth(
 
   const headResult = await probeUrl(fetchImpl, url, "HEAD", timeoutMs);
   const result = shouldRetryWithGet(headResult)
-    ? await probeUrl(fetchImpl, url, "GET", timeoutMs)
+    ? await probeUrl(fetchImpl, url, "GET", remainingTimeoutMs(startedAt, timeoutMs))
     : headResult;
   const { status, error } = classifyProbeResult(result);
 
@@ -115,6 +115,10 @@ function nextFailureCount(status: HealthStatus, previousRecord: HealthRecord | n
   }
 
   return (previousRecord?.failureCount ?? 0) + 1;
+}
+
+function remainingTimeoutMs(startedAt: number, timeoutMs: number): number {
+  return Math.max(1, timeoutMs - (Date.now() - startedAt));
 }
 
 function formatFetchError(error: unknown): string {

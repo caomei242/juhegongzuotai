@@ -25,6 +25,20 @@ function healthResponse(status: number): Response {
   return new Response(null, { status });
 }
 
+async function waitUntil(predicate: () => boolean): Promise<void> {
+  const startedAt = Date.now();
+
+  while (!predicate()) {
+    if (Date.now() - startedAt > 1000) {
+      throw new Error("Timed out waiting for condition.");
+    }
+
+    await new Promise((resolve) => {
+      setTimeout(resolve, 0);
+    });
+  }
+}
+
 describe("workbench routes", () => {
   let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
 
@@ -202,6 +216,41 @@ describe("workbench routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("does not block link edits while check-all is probing links", async () => {
+    const { app } = await createTestApp();
+    let resolveProbe: ((response: Response) => void) | undefined;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((resolve) => {
+          resolveProbe = resolve;
+        })
+    );
+
+    const checkAllRequest = request(app)
+      .post("/api/health/check-all")
+      .expect(200)
+      .then((response) => response);
+    await waitUntil(() => fetchMock.mock.calls.length === 1);
+
+    await request(app)
+      .post("/api/links")
+      .send({
+        groupId: "main-work",
+        title: "检查中新增",
+        url: "https://created-while-checking.example.com"
+      })
+      .expect(201);
+
+    resolveProbe?.(healthResponse(200));
+    const response = await checkAllRequest;
+
+    expect(response.body.checked).toBe(1);
+    expect(response.body.state.workbench.links).toHaveLength(2);
+    expect(response.body.state.workbench.links).toContainEqual(
+      expect.objectContaining({ title: "检查中新增" })
+    );
+  });
+
   it("removes a deleted link's health record so exported data stays importable", async () => {
     const { app } = await createTestApp();
 
@@ -212,6 +261,30 @@ describe("workbench routes", () => {
     expect(deleteResponse.body.state.workbench.links).toHaveLength(0);
     expect(deleteResponse.body.state.healthRecords).toHaveLength(0);
     expect(importResponse.body.healthRecords).toHaveLength(0);
+  });
+
+  it("exports importable state even when stored health records contain historical orphans", async () => {
+    const { app, store } = await createTestApp();
+    await store.writeHealthRecords([
+      ...defaultHealthRecords,
+      {
+        linkId: "deleted-link",
+        status: "down",
+        checkedAt: "2026-06-16T08:00:00.000Z",
+        responseMs: null,
+        error: "历史残留",
+        failureCount: 2
+      }
+    ]);
+
+    const stateResponse = await request(app).get("/api/state").expect(200);
+    const exportResponse = await request(app).get("/api/export").expect(200);
+    const importResponse = await request(app).post("/api/import").send(exportResponse.body).expect(200);
+
+    expect(stateResponse.body.healthRecords).toHaveLength(1);
+    expect(exportResponse.body.healthRecords).toHaveLength(1);
+    expect(exportResponse.body.healthRecords[0].linkId).toBe("customer-workbench");
+    expect(importResponse.body.healthRecords).toHaveLength(1);
   });
 
   it("rejects deleting a group that still contains links", async () => {

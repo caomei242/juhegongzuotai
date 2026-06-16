@@ -113,7 +113,7 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   router.get(
     "/state",
     asyncRoute(async (_req, res) => {
-      res.json(await store.readState());
+      res.json(toConsistentState(await store.readState()));
     })
   );
 
@@ -317,21 +317,34 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   router.post(
     "/health/check/:linkId",
     asyncRoute(async (req, res) => {
-      await withMutationLock(async () => {
+      const snapshot = await withMutationLock(async () => {
         const state = await store.readState();
         const link = findLink(state.workbench, req.params.linkId);
-        const record = await checkLinkHealth(link.id, link.url, {
+        return {
+          link,
           timeoutMs: state.workbench.settings.checkTimeoutMs,
           previousRecord: findHealthRecord(state.healthRecords, link.id)
-        });
-        const healthRecords = upsertHealthRecord(state.healthRecords, record);
+        };
+      });
 
+      const record = await checkLinkHealth(snapshot.link.id, snapshot.link.url, {
+        timeoutMs: snapshot.timeoutMs,
+        previousRecord: snapshot.previousRecord
+      });
+
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        findLink(state.workbench, snapshot.link.id);
+        const healthRecords = upsertHealthRecord(
+          pruneHealthRecords(state.healthRecords, state.workbench.links),
+          record
+        );
         await store.writeHealthRecords(healthRecords);
 
         const persistedState = await store.readState();
         res.json({
-          record: requireHealthRecord(persistedState.healthRecords, link.id),
-          state: persistedState
+          record: requireHealthRecord(persistedState.healthRecords, snapshot.link.id),
+          state: toConsistentState(persistedState)
         });
       });
     })
@@ -340,35 +353,50 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   router.post(
     "/health/check-all",
     asyncRoute(async (_req, res) => {
+      const snapshot = await withMutationLock(async () => {
+        const state = await store.readState();
+        return {
+          links: [...state.workbench.links],
+          timeoutMs: state.workbench.settings.checkTimeoutMs,
+          healthRecords: pruneHealthRecords(state.healthRecords, state.workbench.links)
+        };
+      });
+      const checkedRecords: HealthRecord[] = [];
+      const summary = {
+        checked: 0,
+        normal: 0,
+        degraded: 0,
+        down: 0
+      };
+
+      for (const link of snapshot.links) {
+        const record = await checkLinkHealth(link.id, link.url, {
+          timeoutMs: snapshot.timeoutMs,
+          previousRecord: findHealthRecord(snapshot.healthRecords, link.id)
+        });
+
+        checkedRecords.push(record);
+        summary.checked += 1;
+
+        if (record.status === "normal" || record.status === "degraded" || record.status === "down") {
+          summary[record.status] += 1;
+        }
+      }
+
       await withMutationLock(async () => {
         const state = await store.readState();
-        let healthRecords = pruneHealthRecords(state.healthRecords, state.workbench.links);
-        const summary = {
-          checked: 0,
-          normal: 0,
-          degraded: 0,
-          down: 0
-        };
-
-        for (const link of state.workbench.links) {
-          const record = await checkLinkHealth(link.id, link.url, {
-            timeoutMs: state.workbench.settings.checkTimeoutMs,
-            previousRecord: findHealthRecord(healthRecords, link.id)
-          });
-
-          healthRecords = upsertHealthRecord(healthRecords, record);
-          summary.checked += 1;
-
-          if (record.status === "normal" || record.status === "degraded" || record.status === "down") {
-            summary[record.status] += 1;
-          }
-        }
-
+        const currentLinkIds = new Set(state.workbench.links.map((link) => link.id));
+        const healthRecords = checkedRecords
+          .filter((record) => currentLinkIds.has(record.linkId))
+          .reduce(
+            (records, record) => upsertHealthRecord(records, record),
+            pruneHealthRecords(state.healthRecords, state.workbench.links)
+          );
         await store.writeHealthRecords(healthRecords);
 
         res.json({
           ...summary,
-          state: await store.readState()
+          state: toConsistentState(await store.readState())
         });
       });
     })
@@ -377,7 +405,7 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   router.get(
     "/export",
     asyncRoute(async (_req, res) => {
-      res.json(await store.readState());
+      res.json(toConsistentState(await store.readState()));
     })
   );
 
@@ -513,6 +541,13 @@ function upsertHealthRecord(healthRecords: HealthRecord[], record: HealthRecord)
 function pruneHealthRecords(healthRecords: HealthRecord[], links: WorkbenchLink[]): HealthRecord[] {
   const linkIds = new Set(links.map((link) => link.id));
   return healthRecords.filter((record) => linkIds.has(record.linkId));
+}
+
+function toConsistentState(state: ExportPayload): ExportPayload {
+  return {
+    ...state,
+    healthRecords: pruneHealthRecords(state.healthRecords, state.workbench.links)
+  };
 }
 
 function assertGroupExists(workbench: Workbench, groupId: string): void {
