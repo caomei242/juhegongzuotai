@@ -202,6 +202,18 @@ describe("workbench routes", () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
+  it("removes a deleted link's health record so exported data stays importable", async () => {
+    const { app } = await createTestApp();
+
+    const deleteResponse = await request(app).delete("/api/links/customer-workbench").expect(200);
+    const exportResponse = await request(app).get("/api/export").expect(200);
+    const importResponse = await request(app).post("/api/import").send(exportResponse.body).expect(200);
+
+    expect(deleteResponse.body.state.workbench.links).toHaveLength(0);
+    expect(deleteResponse.body.state.healthRecords).toHaveLength(0);
+    expect(importResponse.body.healthRecords).toHaveLength(0);
+  });
+
   it("rejects deleting a group that still contains links", async () => {
     const { app } = await createTestApp();
 

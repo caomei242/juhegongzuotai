@@ -290,7 +290,9 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
         const linkIndex = findLinkIndex(state.workbench, req.params.id);
         state.workbench.links.splice(linkIndex, 1);
         state.workbench.links = normalizeLinkOrders(state.workbench, state.workbench.links);
+        state.healthRecords = pruneHealthRecords(state.healthRecords, state.workbench.links);
         await store.writeWorkbench(state.workbench);
+        await store.writeHealthRecords(state.healthRecords);
 
         res.json({ state: await store.readState() });
       });
@@ -340,7 +342,7 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     asyncRoute(async (_req, res) => {
       await withMutationLock(async () => {
         const state = await store.readState();
-        let healthRecords = state.healthRecords;
+        let healthRecords = pruneHealthRecords(state.healthRecords, state.workbench.links);
         const summary = {
           checked: 0,
           normal: 0,
@@ -506,6 +508,11 @@ function upsertHealthRecord(healthRecords: HealthRecord[], record: HealthRecord)
   }
 
   return healthRecords.map((candidate, candidateIndex) => (candidateIndex === index ? record : candidate));
+}
+
+function pruneHealthRecords(healthRecords: HealthRecord[], links: WorkbenchLink[]): HealthRecord[] {
+  const linkIds = new Set(links.map((link) => link.id));
+  return healthRecords.filter((record) => linkIds.has(record.linkId));
 }
 
 function assertGroupExists(workbench: Workbench, groupId: string): void {
