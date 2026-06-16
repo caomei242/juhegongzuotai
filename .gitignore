@@ -1,0 +1,13 @@
+.DS_Store
+node_modules/
+dist/
+.env
+.codex_py_logs/
+.superpowers/
+outputs/
+tmp/
+tmp-link
+_icloud_日报
+data/*.json
+data/backups/
+!data/.gitkeep
