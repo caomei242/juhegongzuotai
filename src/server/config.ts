@@ -60,6 +60,7 @@ function integerEnv(description: string, defaultValue: string, min: number, max?
     .default(defaultValue)
     .refine((value) => /^\d+$/.test(value), `must be a ${description}`)
     .transform((value) => Number(value))
+    .refine((value) => Number.isSafeInteger(value), "must be a safe integer")
     .refine(
       (value) => value >= min && (max === undefined || value <= max),
       max === undefined ? `must be at least ${min}` : `must be between ${min} and ${max}`

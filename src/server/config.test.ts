@@ -73,7 +73,9 @@ describe("readConfig", () => {
     ["STRAWBERRY_DATA_DIR", "   "],
     ["STRAWBERRY_CHECK_INTERVAL_MINUTES", "0"],
     ["STRAWBERRY_CHECK_INTERVAL_MINUTES", "1.5"],
+    ["STRAWBERRY_CHECK_INTERVAL_MINUTES", "9007199254740992"],
     ["STRAWBERRY_CHECK_TIMEOUT_MS", "-1"],
+    ["STRAWBERRY_CHECK_TIMEOUT_MS", "9007199254740992"],
     ["STRAWBERRY_ALLOW_LAN", "yes"]
   ] satisfies Array<[ConfigKey, string]>)("throws clearly for invalid %s=%s", (key, value) => {
     process.env[key] = value;
