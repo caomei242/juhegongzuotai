@@ -6,9 +6,11 @@ import {
   ExportPayloadSchema,
   type ExportPayload,
   type Group,
+  type HealthRecord,
   type Workbench,
   type WorkbenchLink
 } from "../../shared/schema.js";
+import { checkLinkHealth } from "../health/healthChecker.js";
 import { JsonStore } from "../storage/jsonStore.js";
 
 const CreateGroupPayloadSchema = z
@@ -310,6 +312,66 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     })
   );
 
+  router.post(
+    "/health/check/:linkId",
+    asyncRoute(async (req, res) => {
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const link = findLink(state.workbench, req.params.linkId);
+        const record = await checkLinkHealth(link.id, link.url, {
+          timeoutMs: state.workbench.settings.checkTimeoutMs,
+          previousRecord: findHealthRecord(state.healthRecords, link.id)
+        });
+        const healthRecords = upsertHealthRecord(state.healthRecords, record);
+
+        await store.writeHealthRecords(healthRecords);
+
+        const persistedState = await store.readState();
+        res.json({
+          record: requireHealthRecord(persistedState.healthRecords, link.id),
+          state: persistedState
+        });
+      });
+    })
+  );
+
+  router.post(
+    "/health/check-all",
+    asyncRoute(async (_req, res) => {
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        let healthRecords = state.healthRecords;
+        const summary = {
+          checked: 0,
+          normal: 0,
+          degraded: 0,
+          down: 0
+        };
+
+        for (const link of state.workbench.links) {
+          const record = await checkLinkHealth(link.id, link.url, {
+            timeoutMs: state.workbench.settings.checkTimeoutMs,
+            previousRecord: findHealthRecord(healthRecords, link.id)
+          });
+
+          healthRecords = upsertHealthRecord(healthRecords, record);
+          summary.checked += 1;
+
+          if (record.status === "normal" || record.status === "degraded" || record.status === "down") {
+            summary[record.status] += 1;
+          }
+        }
+
+        await store.writeHealthRecords(healthRecords);
+
+        res.json({
+          ...summary,
+          state: await store.readState()
+        });
+      });
+    })
+  );
+
   router.get(
     "/export",
     asyncRoute(async (_req, res) => {
@@ -420,6 +482,30 @@ function findLinkIndex(workbench: Workbench, id: string): number {
 
 function findLink(workbench: Workbench, id: string): WorkbenchLink {
   return workbench.links[findLinkIndex(workbench, id)];
+}
+
+function findHealthRecord(healthRecords: HealthRecord[], linkId: string): HealthRecord | undefined {
+  return healthRecords.find((record) => record.linkId === linkId);
+}
+
+function requireHealthRecord(healthRecords: HealthRecord[], linkId: string): HealthRecord {
+  const record = findHealthRecord(healthRecords, linkId);
+
+  if (record === undefined) {
+    throw new Error("健康检查记录写入失败。");
+  }
+
+  return record;
+}
+
+function upsertHealthRecord(healthRecords: HealthRecord[], record: HealthRecord): HealthRecord[] {
+  const index = healthRecords.findIndex((candidate) => candidate.linkId === record.linkId);
+
+  if (index === -1) {
+    return [...healthRecords, record];
+  }
+
+  return healthRecords.map((candidate, candidateIndex) => (candidateIndex === index ? record : candidate));
 }
 
 function assertGroupExists(workbench: Workbench, groupId: string): void {

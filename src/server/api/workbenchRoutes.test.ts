@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import express from "express";
 import request from "supertest";
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { defaultHealthRecords, defaultWorkbench } from "../../shared/defaultData.js";
 import { JsonStore } from "../storage/jsonStore.js";
 import { apiJsonErrorHandler, apiNotFoundHandler, createWorkbenchRouter } from "./workbenchRoutes.js";
@@ -21,7 +21,23 @@ async function createTestApp() {
   return { app, store };
 }
 
+function healthResponse(status: number): Response {
+  return new Response(null, { status });
+}
+
 describe("workbench routes", () => {
+  let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
+
+  beforeEach(() => {
+    fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("returns Chinese default state", async () => {
     const { app } = await createTestApp();
 
@@ -99,10 +115,91 @@ describe("workbench routes", () => {
   it("returns a Chinese JSON 404 for unknown API routes", async () => {
     const { app } = await createTestApp();
 
-    const response = await request(app).post("/api/health/check-all").expect(404);
+    const response = await request(app).post("/api/unknown-route").expect(404);
 
     expect(response.type).toMatch(/json/);
     expect(response.body.error).toBe("没有找到这个接口。");
+  });
+
+  it("checks a single link and persists its health record", async () => {
+    const { app, store } = await createTestApp();
+    fetchMock.mockResolvedValueOnce(healthResponse(200));
+
+    const response = await request(app).post("/api/health/check/customer-workbench").expect(200);
+    const state = await store.readState();
+    const persistedRecord = state.healthRecords.find((record) => record.linkId === "customer-workbench");
+
+    expect(response.body.record).toMatchObject({
+      linkId: "customer-workbench",
+      status: "normal",
+      error: "",
+      failureCount: 0
+    });
+    expect(response.body.record.checkedAt).toEqual(expect.any(String));
+    expect(response.body.record.responseMs).toEqual(expect.any(Number));
+    expect(persistedRecord).toMatchObject(response.body.record);
+    expect(response.body.state.healthRecords).toContainEqual(response.body.record);
+  });
+
+  it("returns a Chinese 404 when checking an unknown link", async () => {
+    const { app } = await createTestApp();
+
+    const response = await request(app).post("/api/health/check/missing-link").expect(404);
+
+    expect(response.body.error).toMatch(/链接|没有找到|不存在/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("checks all links, summarizes statuses, and updates health records", async () => {
+    const { app, store } = await createTestApp();
+    const degraded = await request(app)
+      .post("/api/links")
+      .send({
+        groupId: "main-work",
+        title: "降级链接",
+        url: "https://degraded.example.com"
+      })
+      .expect(201);
+    const down = await request(app)
+      .post("/api/links")
+      .send({
+        groupId: "main-work",
+        title: "宕机链接",
+        url: "https://down.example.com"
+      })
+      .expect(201);
+
+    fetchMock.mockImplementation(async (input) => {
+      const url = String(input);
+
+      if (url.includes("degraded.example.com")) {
+        return healthResponse(500);
+      }
+
+      if (url.includes("down.example.com")) {
+        throw new TypeError("ENOTFOUND down.example.com");
+      }
+
+      return healthResponse(200);
+    });
+
+    const response = await request(app).post("/api/health/check-all").expect(200);
+    const state = await store.readState();
+    const recordsByLinkId = new Map(
+      response.body.state.healthRecords.map((record: { linkId: string }) => [record.linkId, record])
+    );
+
+    expect(response.body).toMatchObject({
+      checked: 3,
+      normal: 1,
+      degraded: 1,
+      down: 1
+    });
+    expect(recordsByLinkId.get("customer-workbench")).toMatchObject({ status: "normal", failureCount: 0 });
+    expect(recordsByLinkId.get(degraded.body.link.id)).toMatchObject({ status: "degraded", failureCount: 1 });
+    expect(recordsByLinkId.get(down.body.link.id)).toMatchObject({ status: "down", failureCount: 1 });
+    expect(state.healthRecords).toEqual(response.body.state.healthRecords);
+    expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
   it("rejects deleting a group that still contains links", async () => {
