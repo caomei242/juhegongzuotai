@@ -9,8 +9,8 @@
     "dev:server": "tsx watch src/server/index.ts",
     "build": "vite build && tsc -p tsconfig.node.json",
     "start": "node dist/server/server/index.js",
-    "test": "vitest run",
-    "test:watch": "vitest",
+    "test": "NODE_ENV=development vitest run",
+    "test:watch": "NODE_ENV=development vitest",
     "typecheck": "tsc --noEmit"
   },
   "engines": {

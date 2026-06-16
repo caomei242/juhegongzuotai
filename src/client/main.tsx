@@ -1,5 +1,6 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
+import App from "./App.js";
 
 const root = document.getElementById("root");
 
@@ -9,6 +10,6 @@ if (!root) {
 
 createRoot(root).render(
   <React.StrictMode>
-    <div>草莓工作台初始化完成</div>
+    <App />
   </React.StrictMode>
 );
