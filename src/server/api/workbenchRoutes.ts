@@ -343,6 +343,10 @@ export const apiJsonErrorHandler: ErrorRequestHandler = (error, req, res, next) 
   next(error);
 };
 
+export const apiNotFoundHandler: RequestHandler = (_req, res) => {
+  res.status(404).json({ error: "没有找到这个接口。" });
+};
+
 function asyncRoute(handler: RequestHandler): RequestHandler {
   return (req, res, next) => {
     Promise.resolve(handler(req, res, next)).catch(next);

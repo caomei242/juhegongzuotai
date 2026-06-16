@@ -8,7 +8,7 @@ import request from "supertest";
 import { describe, expect, it } from "vitest";
 import { defaultHealthRecords, defaultWorkbench } from "../../shared/defaultData.js";
 import { JsonStore } from "../storage/jsonStore.js";
-import { apiJsonErrorHandler, createWorkbenchRouter } from "./workbenchRoutes.js";
+import { apiJsonErrorHandler, apiNotFoundHandler, createWorkbenchRouter } from "./workbenchRoutes.js";
 
 async function createTestApp() {
   const dir = await mkdtemp(join(tmpdir(), "strawberry-api-"));
@@ -17,6 +17,7 @@ async function createTestApp() {
   app.use(express.json());
   app.use(apiJsonErrorHandler);
   app.use("/api", createWorkbenchRouter(store));
+  app.use("/api", apiNotFoundHandler);
   return { app, store };
 }
 
@@ -95,6 +96,15 @@ describe("workbench routes", () => {
     expect(response.body.error).toBe("请求 JSON 格式无效。");
   });
 
+  it("returns a Chinese JSON 404 for unknown API routes", async () => {
+    const { app } = await createTestApp();
+
+    const response = await request(app).post("/api/health/check-all").expect(404);
+
+    expect(response.type).toMatch(/json/);
+    expect(response.body.error).toBe("没有找到这个接口。");
+  });
+
   it("rejects deleting a group that still contains links", async () => {
     const { app } = await createTestApp();
 
@@ -156,5 +166,82 @@ describe("workbench routes", () => {
     const response = await request(app).post("/api/import").send(payload).expect(400);
 
     expect(response.body.error).toMatch(/重复|无效/);
+  });
+
+  it("rejects importing duplicate health record link ids", async () => {
+    const { app } = await createTestApp();
+    const payload = structuredClone({
+      workbench: defaultWorkbench,
+      healthRecords: defaultHealthRecords
+    });
+    payload.healthRecords.push({ ...payload.healthRecords[0] });
+
+    const response = await request(app).post("/api/import").send(payload).expect(400);
+
+    expect(response.body.error).toMatch(/重复|无效/);
+  });
+
+  it("rejects importing health records that reference a missing link", async () => {
+    const { app, store } = await createTestApp();
+    const payload = structuredClone({
+      workbench: defaultWorkbench,
+      healthRecords: defaultHealthRecords
+    });
+    payload.healthRecords[0].linkId = "missing-link";
+
+    const response = await request(app).post("/api/import").send(payload).expect(400);
+    const state = await store.readState();
+
+    expect(response.body.error).toMatch(/链接|不存在|无效/);
+    expect(state.healthRecords[0].linkId).toBe("customer-workbench");
+  });
+
+  it("continues processing mutations after a failed mutation", async () => {
+    const { app } = await createTestApp();
+
+    await request(app)
+      .post("/api/links")
+      .send({
+        groupId: "missing-group",
+        title: "失败后恢复",
+        url: "https://recovery.example.com"
+      })
+      .expect(400);
+
+    const response = await request(app)
+      .post("/api/links")
+      .send({
+        groupId: "main-work",
+        title: "失败后恢复",
+        url: "https://recovery.example.com"
+      })
+      .expect(201);
+
+    expect(response.body.link.title).toBe("失败后恢复");
+  });
+
+  it("serializes concurrent link creates", async () => {
+    const { app } = await createTestApp();
+    const requests = Array.from({ length: 6 }, (_value, index) =>
+      request(app)
+        .post("/api/links")
+        .send({
+          groupId: "main-work",
+          title: `并发链接 ${index}`,
+          url: `https://concurrent-${index}.example.com`
+        })
+        .expect(201)
+    );
+
+    await Promise.all(requests);
+
+    const response = await request(app).get("/api/state").expect(200);
+    const createdLinks = response.body.workbench.links.filter((link: { title: string }) =>
+      link.title.startsWith("并发链接")
+    );
+    const createdOrders = createdLinks.map((link: { order: number }) => link.order);
+
+    expect(createdLinks).toHaveLength(6);
+    expect(new Set(createdOrders).size).toBe(6);
   });
 });

@@ -1,7 +1,7 @@
 import express from "express";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { apiJsonErrorHandler, createWorkbenchRouter } from "./api/workbenchRoutes.js";
+import { apiJsonErrorHandler, apiNotFoundHandler, createWorkbenchRouter } from "./api/workbenchRoutes.js";
 import { readConfig } from "./config.js";
 import { JsonStore } from "./storage/jsonStore.js";
 
@@ -27,6 +27,7 @@ if (appConfig.accessToken.length > 0) {
 }
 
 app.use("/api", createWorkbenchRouter(store));
+app.use("/api", apiNotFoundHandler);
 
 if (existsSync(clientIndexPath)) {
   app.use(express.static(clientDistDir));
