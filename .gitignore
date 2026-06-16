@@ -4,6 +4,7 @@ dist/
 .env
 .codex_py_logs/
 .superpowers/
+.worktrees/
 outputs/
 tmp/
 tmp-link
