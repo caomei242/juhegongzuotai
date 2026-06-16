@@ -1,8 +1,10 @@
-import express, { type RequestHandler, type Router } from "express";
+import express, { type ErrorRequestHandler, type RequestHandler, type Router } from "express";
 import { nanoid } from "nanoid";
 import { z, ZodError } from "zod";
 import {
   BusinessStatusSchema,
+  ExportPayloadSchema,
+  type ExportPayload,
   type Group,
   type Workbench,
   type WorkbenchLink
@@ -95,6 +97,16 @@ class HttpError extends Error {
 
 export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   const router = express.Router();
+  let mutationQueue: Promise<void> = Promise.resolve();
+
+  function withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const run = mutationQueue.then(operation, operation);
+    mutationQueue = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
 
   router.get(
     "/state",
@@ -107,18 +119,25 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/groups",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(CreateGroupPayloadSchema, req.body);
-      const state = await store.readState();
-      const group: Group = {
-        id: nanoid(),
-        name: payload.name,
-        order: payload.order ?? nextGroupOrder(state.workbench),
-        accent: payload.accent ?? "blue"
-      };
 
-      state.workbench.groups = normalizeGroupOrders([...state.workbench.groups, group]);
-      await store.writeWorkbench(state.workbench);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const group: Group = {
+          id: nanoid(),
+          name: payload.name,
+          order: payload.order ?? nextGroupOrder(state.workbench),
+          accent: payload.accent ?? "blue"
+        };
 
-      res.status(201).json({ group, state: await store.readState() });
+        state.workbench.groups = normalizeGroupOrders([...state.workbench.groups, group]);
+        await store.writeWorkbench(state.workbench);
+
+        const persistedState = await store.readState();
+        res.status(201).json({
+          group: findGroup(persistedState.workbench, group.id),
+          state: persistedState
+        });
+      });
     })
   );
 
@@ -126,36 +145,45 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/groups/:id",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(UpdateGroupPayloadSchema, req.body);
-      const state = await store.readState();
-      const groupIndex = findGroupIndex(state.workbench, req.params.id);
-      const group = {
-        ...state.workbench.groups[groupIndex],
-        ...payload
-      };
 
-      state.workbench.groups[groupIndex] = group;
-      state.workbench.groups = normalizeGroupOrders(state.workbench.groups);
-      await store.writeWorkbench(state.workbench);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const groupIndex = findGroupIndex(state.workbench, req.params.id);
+        const group = {
+          ...state.workbench.groups[groupIndex],
+          ...payload
+        };
 
-      res.json({ group, state: await store.readState() });
+        state.workbench.groups[groupIndex] = group;
+        state.workbench.groups = normalizeGroupOrders(state.workbench.groups);
+        await store.writeWorkbench(state.workbench);
+
+        const persistedState = await store.readState();
+        res.json({
+          group: findGroup(persistedState.workbench, req.params.id),
+          state: persistedState
+        });
+      });
     })
   );
 
   router.delete(
     "/groups/:id",
     asyncRoute(async (req, res) => {
-      const state = await store.readState();
-      const groupIndex = findGroupIndex(state.workbench, req.params.id);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const groupIndex = findGroupIndex(state.workbench, req.params.id);
 
-      if (state.workbench.links.some((link) => link.groupId === req.params.id)) {
-        throw new HttpError(400, "不能删除仍包含链接的分组，请先移动或删除这些链接。");
-      }
+        if (state.workbench.links.some((link) => link.groupId === req.params.id)) {
+          throw new HttpError(400, "不能删除仍包含链接的分组，请先移动或删除这些链接。");
+        }
 
-      state.workbench.groups.splice(groupIndex, 1);
-      state.workbench.groups = normalizeGroupOrders(state.workbench.groups);
-      await store.writeWorkbench(state.workbench);
+        state.workbench.groups.splice(groupIndex, 1);
+        state.workbench.groups = normalizeGroupOrders(state.workbench.groups);
+        await store.writeWorkbench(state.workbench);
 
-      res.json({ state: await store.readState() });
+        res.json({ state: await store.readState() });
+      });
     })
   );
 
@@ -163,18 +191,21 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/groups/reorder",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(GroupReorderPayloadSchema, req.body);
-      const state = await store.readState();
-      assertUnique(payload.groupIds, "分组排序里有重复分组。");
-      assertKnownIds(
-        payload.groupIds,
-        state.workbench.groups.map((group) => group.id),
-        "分组排序包含不存在的分组。"
-      );
 
-      state.workbench.groups = reorderGroups(state.workbench.groups, payload.groupIds);
-      await store.writeWorkbench(state.workbench);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        assertUnique(payload.groupIds, "分组排序里有重复分组。");
+        assertKnownIds(
+          payload.groupIds,
+          state.workbench.groups.map((group) => group.id),
+          "分组排序包含不存在的分组。"
+        );
 
-      res.json({ state: await store.readState() });
+        state.workbench.groups = reorderGroups(state.workbench.groups, payload.groupIds);
+        await store.writeWorkbench(state.workbench);
+
+        res.json({ state: await store.readState() });
+      });
     })
   );
 
@@ -182,27 +213,34 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/links",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(CreateLinkPayloadSchema, req.body);
-      const state = await store.readState();
-      assertGroupExists(state.workbench, payload.groupId);
 
-      const link: WorkbenchLink = {
-        id: nanoid(),
-        groupId: payload.groupId,
-        title: payload.title,
-        url: payload.url,
-        domain: payload.domain ?? deriveDomain(payload.url),
-        businessStatus: payload.businessStatus ?? "待处理",
-        note: payload.note ?? "",
-        todayAction: payload.todayAction ?? "",
-        order: payload.order ?? nextLinkOrder(state.workbench, payload.groupId),
-        pinned: payload.pinned ?? false,
-        checkIntervalMinutes: payload.checkIntervalMinutes ?? state.workbench.settings.checkIntervalMinutes
-      };
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        assertGroupExists(state.workbench, payload.groupId);
 
-      state.workbench.links = normalizeLinkOrders(state.workbench, [...state.workbench.links, link]);
-      await store.writeWorkbench(state.workbench);
+        const link: WorkbenchLink = {
+          id: nanoid(),
+          groupId: payload.groupId,
+          title: payload.title,
+          url: payload.url,
+          domain: payload.domain ?? deriveDomain(payload.url),
+          businessStatus: payload.businessStatus ?? "待处理",
+          note: payload.note ?? "",
+          todayAction: payload.todayAction ?? "",
+          order: payload.order ?? nextLinkOrder(state.workbench, payload.groupId),
+          pinned: payload.pinned ?? false,
+          checkIntervalMinutes: payload.checkIntervalMinutes ?? state.workbench.settings.checkIntervalMinutes
+        };
 
-      res.status(201).json({ link, state: await store.readState() });
+        state.workbench.links = normalizeLinkOrders(state.workbench, [...state.workbench.links, link]);
+        await store.writeWorkbench(state.workbench);
+
+        const persistedState = await store.readState();
+        res.status(201).json({
+          link: findLink(persistedState.workbench, link.id),
+          state: persistedState
+        });
+      });
     })
   );
 
@@ -210,41 +248,50 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/links/:id",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(UpdateLinkPayloadSchema, req.body);
-      const state = await store.readState();
-      const linkIndex = findLinkIndex(state.workbench, req.params.id);
-      const current = state.workbench.links[linkIndex];
-      const nextGroupId = payload.groupId ?? current.groupId;
 
-      assertGroupExists(state.workbench, nextGroupId);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const linkIndex = findLinkIndex(state.workbench, req.params.id);
+        const current = state.workbench.links[linkIndex];
+        const nextGroupId = payload.groupId ?? current.groupId;
 
-      const link: WorkbenchLink = {
-        ...current,
-        ...payload,
-        groupId: nextGroupId,
-        domain: payload.domain ?? (payload.url === undefined ? current.domain : deriveDomain(payload.url)),
-        order:
-          payload.order ??
-          (nextGroupId === current.groupId ? current.order : nextLinkOrder(state.workbench, nextGroupId))
-      };
+        assertGroupExists(state.workbench, nextGroupId);
 
-      state.workbench.links[linkIndex] = link;
-      state.workbench.links = normalizeLinkOrders(state.workbench, state.workbench.links);
-      await store.writeWorkbench(state.workbench);
+        const link: WorkbenchLink = {
+          ...current,
+          ...payload,
+          groupId: nextGroupId,
+          domain: payload.domain ?? (payload.url === undefined ? current.domain : deriveDomain(payload.url)),
+          order:
+            payload.order ??
+            (nextGroupId === current.groupId ? current.order : nextLinkOrder(state.workbench, nextGroupId))
+        };
 
-      res.json({ link, state: await store.readState() });
+        state.workbench.links[linkIndex] = link;
+        state.workbench.links = normalizeLinkOrders(state.workbench, state.workbench.links);
+        await store.writeWorkbench(state.workbench);
+
+        const persistedState = await store.readState();
+        res.json({
+          link: findLink(persistedState.workbench, req.params.id),
+          state: persistedState
+        });
+      });
     })
   );
 
   router.delete(
     "/links/:id",
     asyncRoute(async (req, res) => {
-      const state = await store.readState();
-      const linkIndex = findLinkIndex(state.workbench, req.params.id);
-      state.workbench.links.splice(linkIndex, 1);
-      state.workbench.links = normalizeLinkOrders(state.workbench, state.workbench.links);
-      await store.writeWorkbench(state.workbench);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        const linkIndex = findLinkIndex(state.workbench, req.params.id);
+        state.workbench.links.splice(linkIndex, 1);
+        state.workbench.links = normalizeLinkOrders(state.workbench, state.workbench.links);
+        await store.writeWorkbench(state.workbench);
 
-      res.json({ state: await store.readState() });
+        res.json({ state: await store.readState() });
+      });
     })
   );
 
@@ -252,12 +299,14 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
     "/links/reorder",
     asyncRoute(async (req, res) => {
       const payload = parsePayload(LinkReorderPayloadSchema, req.body);
-      const state = await store.readState();
 
-      state.workbench.links = reorderLinks(state.workbench, payload);
-      await store.writeWorkbench(state.workbench);
+      await withMutationLock(async () => {
+        const state = await store.readState();
+        state.workbench.links = reorderLinks(state.workbench, payload);
+        await store.writeWorkbench(state.workbench);
 
-      res.json({ state: await store.readState() });
+        res.json({ state: await store.readState() });
+      });
     })
   );
 
@@ -271,7 +320,12 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
   router.post(
     "/import",
     asyncRoute(async (req, res) => {
-      res.json(await store.importPayload(req.body));
+      const payload = parsePayload(ExportPayloadSchema, req.body);
+      validateImportIntegrity(payload);
+
+      await withMutationLock(async () => {
+        res.json(await store.importPayload(payload));
+      });
     })
   );
 
@@ -279,6 +333,15 @@ export function createWorkbenchRouter(store = new JsonStore("./data")): Router {
 
   return router;
 }
+
+export const apiJsonErrorHandler: ErrorRequestHandler = (error, req, res, next) => {
+  if (isApiRequest(req) && isJsonParseError(error)) {
+    res.status(400).json({ error: "请求 JSON 格式无效。" });
+    return;
+  }
+
+  next(error);
+};
 
 function asyncRoute(handler: RequestHandler): RequestHandler {
   return (req, res, next) => {
@@ -337,6 +400,10 @@ function findGroupIndex(workbench: Workbench, id: string): number {
   return index;
 }
 
+function findGroup(workbench: Workbench, id: string): Group {
+  return workbench.groups[findGroupIndex(workbench, id)];
+}
+
 function findLinkIndex(workbench: Workbench, id: string): number {
   const index = workbench.links.findIndex((link) => link.id === id);
 
@@ -345,6 +412,10 @@ function findLinkIndex(workbench: Workbench, id: string): number {
   }
 
   return index;
+}
+
+function findLink(workbench: Workbench, id: string): WorkbenchLink {
+  return workbench.links[findLinkIndex(workbench, id)];
 }
 
 function assertGroupExists(workbench: Workbench, groupId: string): void {
@@ -364,6 +435,27 @@ function assertKnownIds(values: string[], knownValues: string[], message: string
 
   if (values.some((value) => !known.has(value))) {
     throw new HttpError(400, message);
+  }
+}
+
+function validateImportIntegrity(payload: ExportPayload): void {
+  const groupIds = payload.workbench.groups.map((group) => group.id);
+  const linkIds = payload.workbench.links.map((link) => link.id);
+  const healthRecordLinkIds = payload.healthRecords.map((record) => record.linkId);
+
+  assertUnique(groupIds, "导入数据无效：分组 ID 重复。");
+  assertUnique(linkIds, "导入数据无效：链接 ID 重复。");
+  assertUnique(healthRecordLinkIds, "导入数据无效：健康记录链接 ID 重复。");
+
+  const groupIdSet = new Set(groupIds);
+  const linkIdSet = new Set(linkIds);
+
+  if (payload.workbench.links.some((link) => !groupIdSet.has(link.groupId))) {
+    throw new HttpError(400, "导入数据无效：链接引用了不存在的分组。");
+  }
+
+  if (payload.healthRecords.some((record) => !linkIdSet.has(record.linkId))) {
+    throw new HttpError(400, "导入数据无效：健康记录引用了不存在的链接。");
   }
 }
 
@@ -462,4 +554,17 @@ function appendPriority(priorityByGroup: Map<string, string[]>, groupId: string,
 
 function deriveDomain(url: string): string {
   return new URL(url).hostname;
+}
+
+function isApiRequest(req: express.Request): boolean {
+  return req.originalUrl === "/api" || req.originalUrl.startsWith("/api/");
+}
+
+function isJsonParseError(error: unknown): boolean {
+  return (
+    error instanceof SyntaxError &&
+    typeof (error as { status?: unknown }).status === "number" &&
+    (error as { status?: unknown }).status === 400 &&
+    "body" in error
+  );
 }
