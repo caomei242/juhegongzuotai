@@ -4,14 +4,11 @@ import { createRoot } from "react-dom/client";
 const root = document.getElementById("root");
 
 if (!root) {
-  throw new Error("Root element #root was not found.");
+  throw new Error("没有找到 #root 根节点。");
 }
 
 createRoot(root).render(
   <React.StrictMode>
-    <div>
-      <h1>草莓工作台</h1>
-      <p>Bootstrap shell is ready.</p>
-    </div>
+    <div>草莓工作台初始化完成</div>
   </React.StrictMode>
 );
