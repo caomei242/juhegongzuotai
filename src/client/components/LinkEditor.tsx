@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Trash2, Save, Activity } from "lucide-react";
 import type { BusinessStatus, Group, WorkbenchLink } from "../../shared/schema.js";
 
@@ -21,6 +21,17 @@ export function LinkEditor({ link, groups, statuses, busy, onSave, onDelete, onC
   const [todayAction, setTodayAction] = useState(link.todayAction);
   const [pinned, setPinned] = useState(link.pinned);
   const [checkIntervalMinutes, setCheckIntervalMinutes] = useState(String(link.checkIntervalMinutes));
+
+  useEffect(() => {
+    setTitle(link.title);
+    setUrl(link.url);
+    setGroupId(link.groupId);
+    setBusinessStatus(link.businessStatus);
+    setNote(link.note);
+    setTodayAction(link.todayAction);
+    setPinned(link.pinned);
+    setCheckIntervalMinutes(String(link.checkIntervalMinutes));
+  }, [link]);
 
   return (
     <form

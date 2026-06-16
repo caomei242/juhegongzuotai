@@ -58,14 +58,24 @@ export default function App() {
   );
 
   function applyState(payload: ExportPayload) {
+    const nextSelectedLink = resolveSelectedLink(payload, selectedLinkId, selectedGroupId);
+    const nextSelectedGroupId =
+      nextSelectedLink?.groupId ??
+      (payload.workbench.groups.some((group) => group.id === selectedGroupId)
+        ? selectedGroupId
+        : payload.workbench.groups[0]?.id ?? "");
+
     setState(payload);
+    setSelectedLinkId(nextSelectedLink?.id ?? "");
+    setSelectedGroupId(nextSelectedGroupId);
+  }
 
-    if (!payload.workbench.groups.some((group) => group.id === selectedGroupId)) {
-      setSelectedGroupId(payload.workbench.groups[0]?.id ?? "");
-    }
+  function selectLink(linkId: string) {
+    const link = state.workbench.links.find((candidate) => candidate.id === linkId);
+    setSelectedLinkId(linkId);
 
-    if (!payload.workbench.links.some((link) => link.id === selectedLinkId)) {
-      setSelectedLinkId(payload.workbench.links[0]?.id ?? "");
+    if (link) {
+      setSelectedGroupId(link.groupId);
     }
   }
 
@@ -173,7 +183,7 @@ export default function App() {
             searchText={searchText}
             healthFilter={healthFilter}
             statusFilter={statusFilter}
-            onSelectLink={setSelectedLinkId}
+            onSelectLink={selectLink}
             onReorder={handleReorder}
           />
         }
@@ -185,7 +195,7 @@ export default function App() {
             selectedLink={selectedLink}
             statuses={state.workbench.settings.statuses}
             busy={busy}
-            onSelectLink={setSelectedLinkId}
+            onSelectLink={selectLink}
             onUpdateLink={handleUpdateLink}
             onDeleteLink={handleDeleteLink}
             onCheckLink={handleCheckLink}
@@ -202,5 +212,24 @@ export default function App() {
         />
       ) : null}
     </>
+  );
+}
+
+function resolveSelectedLink(
+  payload: ExportPayload,
+  selectedLinkId: string,
+  selectedGroupId: string
+): WorkbenchLink | undefined {
+  const existingSelectedLink = payload.workbench.links.find((link) => link.id === selectedLinkId);
+
+  if (existingSelectedLink) {
+    return existingSelectedLink;
+  }
+
+  return (
+    payload.workbench.links
+      .slice()
+      .sort((left, right) => left.order - right.order)
+      .find((link) => link.groupId === selectedGroupId) ?? payload.workbench.links[0]
   );
 }

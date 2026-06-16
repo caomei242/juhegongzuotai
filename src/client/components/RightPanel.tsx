@@ -31,7 +31,7 @@ export function RightPanel({
 
   return (
     <div className="right-panel-stack">
-      <section>
+      <section aria-label="今日动作">
         <h2>今日动作</h2>
         <div className="compact-list">
           {actionLinks.map((link) => (
@@ -43,7 +43,7 @@ export function RightPanel({
           {actionLinks.length === 0 ? <p className="muted-text">暂无今日动作。</p> : null}
         </div>
       </section>
-      <section>
+      <section aria-label="异常链接">
         <h2>异常链接</h2>
         <div className="compact-list">
           {abnormalRecords.map((record) => {
@@ -58,7 +58,7 @@ export function RightPanel({
           {abnormalRecords.length === 0 ? <p className="muted-text">暂无异常链接。</p> : null}
         </div>
       </section>
-      <section>
+      <section aria-label="当前链接">
         <h2>当前链接</h2>
         {selectedLink ? (
           <LinkEditor

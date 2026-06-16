@@ -6,11 +6,6 @@ import App from "../App.js";
 import { defaultHealthRecords, defaultWorkbench } from "../../shared/defaultData.js";
 import type { ExportPayload } from "../../shared/schema.js";
 
-const defaultState: ExportPayload = {
-  workbench: defaultWorkbench,
-  healthRecords: defaultHealthRecords
-};
-
 function jsonResponse(payload: unknown): Response {
   return new Response(JSON.stringify(payload), {
     status: 200,
@@ -20,24 +15,30 @@ function jsonResponse(payload: unknown): Response {
 
 describe("App", () => {
   let fetchMock: ReturnType<typeof vi.fn<typeof fetch>>;
+  let serverState: ExportPayload;
 
   beforeEach(() => {
+    serverState = structuredClone({
+      workbench: defaultWorkbench,
+      healthRecords: defaultHealthRecords
+    });
     fetchMock = vi.fn<typeof fetch>(async (input, init) => {
       const path = String(input);
 
       if (path === "/api/state" || path === "/api/export") {
-        return jsonResponse(defaultState);
+        return jsonResponse(serverState);
       }
 
       if (path === "/api/health/check-all") {
-        return jsonResponse({ checked: 1, normal: 0, degraded: 0, down: 0, state: defaultState });
+        return jsonResponse({ checked: 1, normal: 0, degraded: 0, down: 0, state: serverState });
       }
 
       if (path === "/api/import" && init?.body) {
-        return jsonResponse(JSON.parse(String(init.body)));
+        serverState = JSON.parse(String(init.body)) as ExportPayload;
+        return jsonResponse(serverState);
       }
 
-      return jsonResponse(defaultState);
+      return jsonResponse(serverState);
     });
     vi.stubGlobal("fetch", fetchMock);
   });
@@ -90,5 +91,32 @@ describe("App", () => {
     );
 
     expect(screen.getByText("导入配置")).toBeInTheDocument();
+  });
+
+  it("keeps selected group aligned when selecting a right-panel action", async () => {
+    const user = userEvent.setup();
+    render(<App />);
+    const actionRegion = await screen.findByRole("region", { name: "今日动作" });
+
+    await user.click(within(actionRegion).getByText("客户工作台"));
+
+    expect(screen.getByLabelText("链接工作区")).toHaveTextContent("客户管理");
+    expect(screen.getByLabelText("链接工作区")).toHaveTextContent("客户工作台");
+  });
+
+  it("refreshes editor draft after importing updated data with the same link id", async () => {
+    const user = userEvent.setup();
+    const updatedState = structuredClone(serverState);
+    updatedState.workbench.links[0].title = "导入后的客户工作台";
+    render(<App />);
+
+    await user.click(await screen.findByText("导入导出"));
+    const textarea = await screen.findByLabelText("配置 JSON");
+    await user.clear(textarea);
+    await user.click(textarea);
+    await user.paste(JSON.stringify(updatedState));
+    await user.click(screen.getByText("导入配置"));
+
+    expect(await screen.findByDisplayValue("导入后的客户工作台")).toBeInTheDocument();
   });
 });
