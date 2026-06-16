@@ -1,11 +1,11 @@
-import { defineConfig, type Plugin } from "vitest/config";
+import { defineConfig } from "vitest/config";
 import react from "@vitejs/plugin-react";
 
 export default defineConfig({
-  plugins: [react() as unknown as Plugin],
+  plugins: [react()],
   test: {
     environment: "jsdom",
-    globals: true,
+    globals: false,
     setupFiles: [],
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"]
   }

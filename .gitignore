@@ -1,7 +1,8 @@
 .DS_Store
 node_modules/
 dist/
-.env
+.env*
+!.env.example
 .codex_py_logs/
 .superpowers/
 .worktrees/
@@ -9,6 +10,6 @@ outputs/
 tmp/
 tmp-link
 _icloud_日报
-data/*.json
-data/backups/
+data/**
+!data/
 !data/.gitkeep
